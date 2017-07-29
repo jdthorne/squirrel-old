@@ -78,6 +78,10 @@ class Vector {
     return Math.sqrt((dx * dx) + (dy * dy));
   }
   
+  angle() {
+    return Math.atan2(this.y, this.x);
+  }
+  
   toString() {
     return `${this.x}, ${this.y}`;
   }
@@ -431,18 +435,21 @@ class World {
 }
 
 class EdgeMovement {
-  constructor(world, position) {
+  constructor(world, position, velocity) {
     this.speed = 2;
     this.boost = 0;
     this.world = world;
     
-    this.leapTo(position);
+    this.leapTo(position, velocity);
   }
   
-  leapTo(position) {
+  leapTo(position, velocity = null) {
     this.edge = this.closestEdgeTo(position);
     this.edgePosition = this.edge.project(position) * this.edge.length;    
     this.position = this.edge.start.plus(this.edge.unit.times(this.edgePosition));
+    
+    var forward = (velocity.dot(this.edge.unit) > 0);
+    this.direction = this.edge.unit.times(forward ? 1 : -1);
   }
   
   closestEdgeTo(point) {
@@ -462,12 +469,12 @@ class EdgeMovement {
   
   move(input) {
     if (input.direction.length() > 0.5) {
-      if (this.boost < this.speed) {
-        this.boost += 0.1;
-      }
+      if (this.boost < this.speed) { this.boost += 0.1; }
     } else {
       this.boost = 0;
     }
+    
+    if (input.direction.length() == 0) { return this; }
     
     var leap = input.direction.times(this.speed + this.boost);
     var leapTarget = this.position.plus(leap);
@@ -476,7 +483,7 @@ class EdgeMovement {
       return new AirMovement(this.world, leapTarget, leap, this.edge);
     }
 
-    this.leapTo(leapTarget);
+    this.leapTo(leapTarget, leap);
     return this;
   }
 }
@@ -489,6 +496,7 @@ class AirMovement {
     this.velocity = new Vector(velocity.x * 0.8, velocity.y > 0 ? 0 : -3);
     this.world = world;
     this.position = position;
+    this.direction = this.velocity.normalized();
     
     this.standoff = 5;
   }
@@ -503,7 +511,7 @@ class AirMovement {
     // Grab
     var grabRange = speed;
     if (!input.jump && this.standoff < 0) {
-      var potentialEdge = new EdgeMovement(this.world, this.position);
+      var potentialEdge = new EdgeMovement(this.world, this.position, this.velocity);
       if (potentialEdge.position.distanceTo(this.position) < grabRange) {
         return potentialEdge;
       }
@@ -514,13 +522,14 @@ class AirMovement {
       if (edge.coversX(this.position.x)) {
         var pointAlongGround = edge.projectPoint(this.position);
         if (pointAlongGround.y < this.position.y + this.velocity.y) {
-          return new EdgeMovement(this.world, pointAlongGround);
+          return new EdgeMovement(this.world, pointAlongGround, this.velocity);
         }
       }
     }  
     
     // Nope, move normally
     this.position.add(this.velocity);  
+    this.direction = this.velocity.normalized();
 
     return this;
   }
@@ -528,12 +537,16 @@ class AirMovement {
 
 class Squirrel {
   constructor(world) {
-    this.movement = new EdgeMovement(world, v`50, 50`);
+    this.position = v`50, 50`;
+    this.direction = v`0, 0`;
+    this.movement = new EdgeMovement(world, this.position, v`0, 0`);
   }
   
   tick(input) {
     this.movement = this.movement.move(input);
+    
     this.position = this.movement.position;
+    this.direction = this.movement.direction;
   }
 }
 
@@ -554,6 +567,7 @@ class Renderer {
   render() {
     this.world.tick(this.input);
 
+    this.context.setTransform(1, 0, 0, 1, 0, 0);
     this.context.drawImage(this.background, 0, 0);
 
     /*
@@ -577,7 +591,15 @@ class Renderer {
     }
     
     for (var mob of this.world.mobs) {
-      this.context.drawImage(this.mob, mob.position.x - 12, mob.position.y - 12);
+      var angle = mob.direction.angle();
+      var upsideDown = ((angle > 0.5*Math.PI) || (angle < -0.5*Math.PI));
+
+      this.context.save();
+      this.context.translate(mob.position.x, mob.position.y);
+      this.context.rotate(angle);
+      this.context.scale(1, upsideDown ? -1 : 1);
+      this.context.drawImage(this.mob, -12, -24);
+      this.context.restore();
       /*
       this.context.beginPath();
       this.context.arc(mob.position.x, mob.position.y, 5, 0, 2 * Math.PI, false);
