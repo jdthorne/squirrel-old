@@ -154,6 +154,15 @@ class Input {
   constructor(doc) {
     this.keys = {};
     this.mouse = v`0, 0`;
+    this.touchpad = {
+      base: v`0, 0`,
+      tip: v`0, 0`,
+      active: false,
+      ids: {
+        tip: null,
+        jump: null
+      }
+    };
     this.direction = v`0, 0`;
     
     doc.addEventListener("keydown", (e) => {
@@ -171,21 +180,78 @@ class Input {
       this.mouse.y = e.clientY;
       e.preventDefault();
     });
+    
+    doc.addEventListener("touchstart", (e) => {
+      for (var i = 0; i < e.changedTouches.length; i++) {
+        var touch = e.changedTouches[i];
+        var touchPoint = new Vector(touch.clientX, touch.clientY);
+        
+        if (touchPoint.x < window.innerWidth / 2) {
+          this.touchpad.ids.tip = touch.identifier;
+          this.touchpad.base = touchPoint;
+          this.touchpad.active = false;
+        } else {
+          this.touchpad.ids.jump = touch.identifier;
+        }
+      }
+      e.preventDefault();
+    });
+    
+    doc.addEventListener("touchmove", (e) => {
+      var touch = this.findTouch(e, this.touchpad.ids.tip);
+      if (touch) {
+        this.touchpad.tip.x = touch.clientX;
+        this.touchpad.tip.y = touch.clientY;
+        this.touchpad.active = true;
+      }
+      e.preventDefault();
+    });
+
+    var endTouch = (e) => {      
+      var touch = this.findTouch(e, this.touchpad.ids.tip);
+      if (touch) {
+        this.touchpad.ids.tip = null;
+        this.touchpad.active = false;
+      }
+      
+      var jump = this.findTouch(e, this.touchpad.ids.jump);
+      if (jump) {
+        this.touchpad.ids.jump = null;
+      }
+      e.preventDefault();
+    }
+    doc.addEventListener("touchend", endTouch);
+    doc.addEventListener("touchcancel", endTouch);
   }
   
   tick() {
-    this.direction = this.rawDirection(); //.times(0.2).add(this.direction.times(0.8));
-    this.jump = this.keys[' '];
+    this.direction = this.keyDirection().add(this.touchDirection()).normalized();
+    
+    this.jump = this.keys[' '] || this.touchpad.ids.jump;
   }
   
-  rawDirection() {
+  keyDirection() {
     var d = v`0, 0`;
     if (this.keys['a']) { d.x = -1; }
     if (this.keys['d']) { d.x =  1; }
     if (this.keys['w']) { d.y = -1; }
     if (this.keys['s']) { d.y =  1; }
     
-    return d.normalized();
+    return d;
+  }
+  
+  findTouch(e, id) {
+    for (var i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier == id) {
+        return e.changedTouches[i];
+      }
+    }
+  }
+  
+  touchDirection() {
+    if (!this.touchpad.active) { return v`0, 0`; }
+    
+    return this.touchpad.tip.minus(this.touchpad.base);
   }
 }
 
@@ -263,6 +329,13 @@ class EdgeMovement {
   }
   
   move(input) {
+    if (input.direction.length() > 0.5) {
+      this.speed += 0.1;
+      if (this.speed > 8) { this.speed = 8; }
+    } else {
+      this.speed = 5;
+    }
+    
     var leap = input.direction.times(this.speed);
     var leapTarget = this.position.plus(leap);
     
@@ -277,37 +350,44 @@ class EdgeMovement {
 
 class AirMovement {
   constructor(world, position, velocity) {
-    this.accelerationMix = 0.95;
-    this.speed = 5;
-    this.grabDistance = 10;
+    this.acceleration = 0.1;
     
     this.gravity = v`0, 0.4`;
-    this.velocity = new Vector(velocity.x, -5);
+    this.velocity = new Vector(velocity.x, velocity.y > 0 ? 0 : -5);
     this.world = world;
     this.position = position;
+    
+    this.standoff = 5;
   }
   
   move(input) {
-    this.velocity = this.velocity.mixWith(input.direction.times(this.speed), 
-                                          this.accelerationMix);
+    var xInput = input.direction.x * this.acceleration;
+    this.velocity.x += xInput;
     this.velocity.add(this.gravity);
-    this.position.add(this.velocity);
+    var speed = this.velocity.length();
+    this.standoff -= 1;
     
-    if (!input.jump) {
+    // Grab
+    var grabRange = speed;
+    if (!input.jump && this.standoff < 0) {
       var potentialEdge = new EdgeMovement(this.world, this.position);
-      if (potentialEdge.position.distanceTo(this.position) < this.grabDistance) {
+      if (potentialEdge.position.distanceTo(this.position) < grabRange) {
         return potentialEdge;
       }
     }
   
+    // Ground
     for (var edge of this.world.groundEdges) {
       if (edge.coversX(this.position.x)) {
         var pointAlongGround = edge.projectPoint(this.position);
-        if (pointAlongGround.y < this.position.y) {
+        if (pointAlongGround.y < this.position.y + this.velocity.y) {
           return new EdgeMovement(this.world, pointAlongGround);
         }
       }
-    }    
+    }  
+    
+    // Nope, move normally
+    this.position.add(this.velocity);  
 
     return this;
   }
@@ -364,6 +444,14 @@ class Renderer {
       this.context.beginPath();
       this.context.arc(mob.position.x, mob.position.y, 5, 0, 2 * Math.PI, false);
       this.context.fill();       
+    }
+    
+    this.context.strokeStyle = 'brown';
+    if (this.input.touchpad.active) {
+      this.context.beginPath();
+      this.context.moveTo(this.input.touchpad.base.x, this.input.touchpad.base.y);
+      this.context.lineTo(this.input.touchpad.tip.x, this.input.touchpad.tip.y);
+      this.context.stroke();
     }
     
     requestAnimationFrame(() => this.render());
