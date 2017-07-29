@@ -1,0 +1,11 @@
+{
+  "name": "squirrel",
+  "version": "1.0.0",
+  "description": "squirrel",
+  "main": "squirrel.html",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "UNLICENSED"
+}
