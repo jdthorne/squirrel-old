@@ -56,6 +56,16 @@ class Vector {
     return Math.sqrt((this.x * this.x) + (this.y * this.y));
   }
   
+  normalized() {
+    if (this.x == 0 && this.y == 0) return this;
+    return this.over(this.length());
+  }
+  
+  normalize() {
+    if (this.x == 0 && this.y == 0) return this;
+    return this.divide_by(this.length());
+  }
+  
   distanceTo(v) {
     var dx = this.x - v.x;
     var dy = this.y - v.y;
@@ -78,6 +88,7 @@ class Edge {
     this.end = end;
     
     this.vector = this.end.position.minus(this.start.position);
+    this.unit = this.vector.normalized();
     this.length = this.vector.length();
   }
   
@@ -96,18 +107,29 @@ class Edge {
   projectPoint(point) {
     return this.start.position.plus(this.vector.times(this.project(point)));
   }
+  
+  toString() {
+    return `${this.start}-${this.end}`;
+  }
 }
 
 class Vertex {
-  constructor(position) {
+  constructor(name, position) {
+    this.name = name;
     this.position = position;
-    this.edges = [];
+    this.exits = [];
+    this.entries = [];
   }
   
   connect(to) {
     var edge = new Edge(this, to);
-    this.edges.push(edge);
+    this.exits.push(edge);
+    to.entries.push(edge);
     return edge;
+  }
+  
+  toString() {
+    return this.name;
   }
 }
 
@@ -115,6 +137,7 @@ class Input {
   constructor(doc) {
     this.keys = {};
     this.mouse = v`0, 0`;
+    this.direction = v`0, 0`;
     
     doc.addEventListener("keydown", (e) => {
       this.keys[e.key] = true;
@@ -134,14 +157,18 @@ class Input {
     return this.keys[k];
   }
   
-  direction() {
+  tick() {
+    this.direction = this.rawDirection().times(0.2).add(this.direction.times(0.8));
+  }
+  
+  rawDirection() {
     var d = v`0, 0`;
     if (this.keys['a']) { d.x = -1; }
     if (this.keys['d']) { d.x =  1; }
     if (this.keys['w']) { d.y = -1; }
     if (this.keys['s']) { d.y =  1; }
     
-    return this.mouse;
+    return d.normalized();
   }
 }
 
@@ -152,11 +179,11 @@ class World {
   }
   
   loadPaths() {
-    var a = new Vertex(v`10, 10`);
-    var b = new Vertex(v`450, 10`);
-    var c = new Vertex(v`450, 200`);
-    var d = new Vertex(v`800, 100`);
-    var e = new Vertex(v`450, 100`);
+    var a = new Vertex('a', v`10, 10`);
+    var b = new Vertex('b', v`450, 10`);
+    var c = new Vertex('c', v`450, 200`);
+    var d = new Vertex('d', v`800, 100`);
+    var e = new Vertex('e', v`450, 100`);
     
     this.edges = [
       a.connect(b),
@@ -173,6 +200,7 @@ class World {
   }
   
   tick(input) {
+    input.tick();
     for (var mob of this.mobs) {
       mob.tick(input);
     }
@@ -180,11 +208,12 @@ class World {
 }
 
 class EdgeMovement {
-  constructor(world, position) {    
+  constructor(world, position) {
+    this.speed = 5;
     this.world = world;
     
     this.edge = this.closestEdgeTo(position);
-    this.edgeProgress = this.edge.project(position);
+    this.edgePosition = this.edge.project(position) * this.edge.length;
   }
   
   closestEdgeTo(point) {
@@ -202,13 +231,67 @@ class EdgeMovement {
   }
   
   move(input) {
-    var point = input.direction();
-    var edge = this.closestEdgeTo(point);
-    var edgeProgress = edge.project(point);
+    this.moveAlongEdge(input.direction, this.speed);
     
-    var snapPoint = edge.start.position.plus(edge.vector.times(edgeProgress));
+    return this.edge.start.position.plus(this.edge.unit.times(this.edgePosition));
+  }
+  
+  moveAlongEdge(direction, distance) {
+    var movementDirection = this.edge.unit.dot(direction);
     
-    return snapPoint;
+    if (movementDirection == 0) { return; }
+    
+    var movement = movementDirection * distance;
+    var newPosition = this.edgePosition + movement;
+    if (newPosition > this.edge.length) {
+      this.moveAlongVertex(this.edge.end, direction, newPosition - this.edge.length);
+    } else if (newPosition < 0) {
+      this.moveAlongVertex(this.edge.start, direction, -newPosition);
+    } else {
+      this.edgePosition += movement;
+    }
+  }
+  
+  moveAlongVertex(vertex, direction, distance) {
+     var bestExit = {
+      angle: 2 * Math.PI,
+      edge: null,
+      reverse: 1
+    }
+    
+    console.log("");
+    console.log("searching for exit...");
+    for (var exit of vertex.exits) {
+      var exit = this.vertexExit(exit, direction, 1);
+      console.log(`  exit to: ${exit.edge} at angle: ${exit.angle}`);
+      if (exit.angle < bestExit.angle) { bestExit = exit; }
+    }
+    
+    for (var entry of vertex.entries) {
+      var exit = this.vertexExit(entry, direction, -1);
+      console.log(`  exit to: ${exit.edge} at angle: ${exit.angle} reverse`);
+      if (exit.angle < bestExit.angle) { bestExit = exit; }
+    }
+    
+    console.log(`  bestExit angle: ${bestExit.angle}`);
+    
+    console.log(`  exiting ${this.edge} for ${bestExit.edge} (rev? ${bestExit.reverse})`);
+    
+    this.edge = bestExit.edge;
+    this.edgePosition = (bestExit.reverse == -1) ? this.edge.length
+                                                 : 0;
+
+    // this.moveAlongEdge(direction, distance);
+  }
+  
+  vertexExit(edge, direction, reverse) {
+    return {
+      angle: Math.abs(Math.acos(
+               edge.unit.times(reverse).dot(direction)
+             )),
+      edge,
+      reverse
+    }
   }
 }
 
