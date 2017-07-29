@@ -66,6 +66,12 @@ class Vector {
     return this.divide_by(this.length());
   }
   
+  mixWith(v, mix) {
+    this.x = (this.x * mix) + (v.x * (1 - mix));
+    this.y = (this.y * mix) + (v.y * (1 - mix));
+    return this;
+  }
+  
   distanceTo(v) {
     var dx = this.x - v.x;
     var dy = this.y - v.y;
@@ -78,14 +84,15 @@ class Vector {
 }
 
 function v(str) {
-  [x, y] = str[0].split(', ').map((c) => parseInt(c));
-  return new Vector(parseInt(x), parseInt(y));
+  [x, y] = str[0].split(', ').map((c) => parseFloat(c));
+  return new Vector(x, y);
 }
 
 class Edge {
-  constructor(start, end) {
+  constructor(start, end, ground) {
     this.start = start;
     this.end = end;
+    this.ground = ground;
     
     this.vector = this.end.position.minus(this.start.position);
     this.unit = this.vector.normalized();
@@ -111,6 +118,16 @@ class Edge {
   toString() {
     return `${this.start}-${this.end}`;
   }
+  
+  coversX(x) {
+    if (x >= this.start.position.x && x <= this.end.position.x) {
+      return true;
+    }
+    if (x <= this.start.position.x && x >= this.end.position.x) {
+      return true;
+    }
+    return false;
+  }
 }
 
 class Vertex {
@@ -121,8 +138,8 @@ class Vertex {
     this.entries = [];
   }
   
-  connect(to) {
-    var edge = new Edge(this, to);
+  connect(to, ground=false) {
+    var edge = new Edge(this, to, ground);
     this.exits.push(edge);
     to.entries.push(edge);
     return edge;
@@ -141,24 +158,24 @@ class Input {
     
     doc.addEventListener("keydown", (e) => {
       this.keys[e.key] = true;
+      e.preventDefault();
     });
 
     doc.addEventListener("keyup", (e) => {
       this.keys[e.key] = false;
+      e.preventDefault();
     });
     
     doc.addEventListener("mousemove", (e) => {
       this.mouse.x = e.clientX;
       this.mouse.y = e.clientY;
+      e.preventDefault();
     });
   }
   
-  key(k) {
-    return this.keys[k];
-  }
-  
   tick() {
-    this.direction = this.rawDirection().times(0.2).add(this.direction.times(0.8));
+    this.direction = this.rawDirection(); //.times(0.2).add(this.direction.times(0.8));
+    this.jump = this.keys[' '];
   }
   
   rawDirection() {
@@ -185,6 +202,10 @@ class World {
     var d = new Vertex('d', v`800, 100`);
     var e = new Vertex('e', v`450, 100`);
     
+    var base = new Vertex('_', v`450, 500`);
+    var left = new Vertex('l', v`0, 550`);
+    var right = new Vertex('r', v`1280, 530`);
+    
     this.edges = [
       a.connect(b),
       a.connect(c),
@@ -193,10 +214,15 @@ class World {
       e.connect(a),
       e.connect(b),
       e.connect(c),
-      e.connect(d)
+      e.connect(d),
+      c.connect(base),
+      left.connect(base, true),
+      right.connect(base, true)
     ]
     
-    this.vertices = [a, b, c, d, e];
+    this.groundEdges = this.edges.filter((e) => e.ground);
+    
+    this.vertices = [a, b, c, d, e, base, left, right];
   }
   
   tick(input) {
@@ -212,86 +238,78 @@ class EdgeMovement {
     this.speed = 5;
     this.world = world;
     
+    this.leapTo(position);
+  }
+  
+  leapTo(position) {
     this.edge = this.closestEdgeTo(position);
-    this.edgePosition = this.edge.project(position) * this.edge.length;
+    this.edgePosition = this.edge.project(position) * this.edge.length;    
+    this.position = this.edge.start.position.plus(this.edge.unit.times(this.edgePosition));
   }
   
   closestEdgeTo(point) {
     var closestEdge = null
     var closestEdgeDistance = 100000;
+    var groundEdge = null;
     for (var edge of this.world.edges) {
       var edgeDistance = edge.distanceTo(point);
       if (edgeDistance < closestEdgeDistance) {
         closestEdge = edge;
         closestEdgeDistance = edgeDistance;
-      }
+      }      
     }
     
     return closestEdge;
   }
   
   move(input) {
-    this.moveAlongEdge(input.direction, this.speed);
+    var leap = input.direction.times(this.speed);
+    var leapTarget = this.position.plus(leap);
     
-    return this.edge.start.position.plus(this.edge.unit.times(this.edgePosition));
-  }
-  
-  moveAlongEdge(direction, distance) {
-    var movementDirection = this.edge.unit.dot(direction);
-    
-    if (movementDirection == 0) { return; }
-    
-    var movement = movementDirection * distance;
-    var newPosition = this.edgePosition + movement;
-    if (newPosition > this.edge.length) {
-      this.moveAlongVertex(this.edge.end, direction, newPosition - this.edge.length);
-    } else if (newPosition < 0) {
-      this.moveAlongVertex(this.edge.start, direction, -newPosition);
-    } else {
-      this.edgePosition += movement;
+    if (input.jump) { 
+      return new AirMovement(this.world, leapTarget, leap, this.edge);
     }
-  }
-  
-  moveAlongVertex(vertex, direction, distance) {
-     var bestExit = {
-      angle: 2 * Math.PI,
-      edge: null,
-      reverse: 1
-    }
-    
-    console.log("");
-    console.log("searching for exit...");
-    for (var exit of vertex.exits) {
-      var exit = this.vertexExit(exit, direction, 1);
-      console.log(`  exit to: ${exit.edge} at angle: ${exit.angle}`);
-      if (exit.angle < bestExit.angle) { bestExit = exit; }
-    }
-    
-    for (var entry of vertex.entries) {
-      var exit = this.vertexExit(entry, direction, -1);
-      console.log(`  exit to: ${exit.edge} at angle: ${exit.angle} reverse`);
-      if (exit.angle < bestExit.angle) { bestExit = exit; }
-    }
-    
-    console.log(`  bestExit angle: ${bestExit.angle}`);
-    
-    console.log(`  exiting ${this.edge} for ${bestExit.edge} (rev? ${bestExit.reverse})`);
-    
-    this.edge = bestExit.edge;
-    this.edgePosition = (bestExit.reverse == -1) ? this.edge.length
-                                                 : 0;
 
-    // this.moveAlongEdge(direction, distance);
+    this.leapTo(leapTarget);
+    return this;
+  }
+}
+
+class AirMovement {
+  constructor(world, position, velocity) {
+    this.accelerationMix = 0.95;
+    this.speed = 5;
+    this.grabDistance = 10;
+    
+    this.gravity = v`0, 0.4`;
+    this.velocity = new Vector(velocity.x, -5);
+    this.world = world;
+    this.position = position;
   }
   
-  vertexExit(edge, direction, reverse) {
-    return {
-      angle: Math.abs(Math.acos(
-               edge.unit.times(reverse).dot(direction)
-             )),
-      edge,
-      reverse
+  move(input) {
+    this.velocity = this.velocity.mixWith(input.direction.times(this.speed), 
+                                          this.accelerationMix);
+    this.velocity.add(this.gravity);
+    this.position.add(this.velocity);
+    
+    if (!input.jump) {
+      var potentialEdge = new EdgeMovement(this.world, this.position);
+      if (potentialEdge.position.distanceTo(this.position) < this.grabDistance) {
+        return potentialEdge;
+      }
     }
+  
+    for (var edge of this.world.groundEdges) {
+      if (edge.coversX(this.position.x)) {
+        var pointAlongGround = edge.projectPoint(this.position);
+        if (pointAlongGround.y < this.position.y) {
+          return new EdgeMovement(this.world, pointAlongGround);
+        }
+      }
+    }    
+
+    return this;
   }
 }
 
@@ -301,7 +319,8 @@ class Squirrel {
   }
   
   tick(input) {
-    this.position = this.movement.move(input);
+    this.movement = this.movement.move(input);
+    this.position = this.movement.position;
   }
 }
 
@@ -318,6 +337,11 @@ class Renderer {
     
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     for (var edge of this.world.edges) {
+      if (edge.ground) {
+        this.context.strokeStyle = 'green';
+      } else {
+        this.context.strokeStyle = 'black';
+      }
       this.context.beginPath();
       this.context.moveTo(edge.start.position.x, edge.start.position.y);
       this.context.lineTo(edge.end.position.x, edge.end.position.y);
@@ -331,7 +355,11 @@ class Renderer {
       this.context.fill();
     }
     
-    this.context.fillStyle = 'brown';
+    if (this.input.jump) {
+      this.context.fillStyle = 'red';
+    } else {
+      this.context.fillStyle = 'brown';
+    }
     for (var mob of this.world.mobs) {
       this.context.beginPath();
       this.context.arc(mob.position.x, mob.position.y, 5, 0, 2 * Math.PI, false);
